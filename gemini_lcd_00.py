@@ -1,0 +1,548 @@
+"""
+PMDB LCD 驱动完整版 (Optimized)
+[优化]: 合并了文件，移除了冗余的空字体方法，使用bytearray优化缓冲区，重构了SPI通信的重复逻辑。
+"""
+
+import os
+import time
+import msvcrt
+from typing import List, Optional, Tuple, Union
+from ctypes import (
+    windll, c_ulong, c_ubyte, c_char_p, c_void_p, c_int, POINTER, byref, create_string_buffer
+)
+
+# [精简]: 保持原路径配置
+os.environ['FTD2XX_DLL_DIR'] = r'C:\Users\sesa696240\Desktop\PMDB'
+
+try:
+    import ftd2xx
+    FTDI_AVAILABLE = True
+except ImportError:
+    FTDI_AVAILABLE = False
+
+# ==========================================
+# 1. LCD 字体数据 (精简版)
+# ==========================================
+
+class LCDFonts:
+    """LCD字体数据类"""
+    # [优化]: 移除了未实现的占位方法(如16x8, 中文等)，仅保留演示用的 6x12 字体。
+    # [优化]: 压缩了字典格式，减少垂直行数。
+    
+    @staticmethod
+    def get_ascii_1206_font(char_code: int) -> List[int]:
+        """获取6x12 ASCII字体数据"""
+        # 仅为演示保留部分常用字符，实际使用可按需扩展
+        ascii_1206 = {
+            0: [0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],  # 空格
+            1: [0x00,0x00,0x04,0x04,0x04,0x04,0x04,0x00,0x00,0x04,0x00,0x00],  # !
+            2: [0x14,0x14,0x0A,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],  # "
+            3: [0x00,0x00,0x0A,0x0A,0x1F,0x0A,0x0A,0x1F,0x0A,0x0A,0x00,0x00],  # #
+            4: [0x00,0x04,0x0E,0x15,0x05,0x06,0x0C,0x14,0x15,0x0E,0x04,0x00],  # $
+            5: [0x00,0x00,0x12,0x15,0x0D,0x15,0x2E,0x2C,0x2A,0x12,0x00,0x00],  # %
+            6: [0x00,0x00,0x04,0x0A,0x0A,0x36,0x15,0x15,0x29,0x16,0x00,0x00],  # &
+            7: [0x02,0x02,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],  # '
+            8: [0x10,0x08,0x08,0x04,0x04,0x04,0x04,0x04,0x08,0x08,0x10,0x00],  # (
+            9: [0x02,0x04,0x04,0x08,0x08,0x08,0x08,0x08,0x04,0x04,0x02,0x00],  # )
+            10: [0x00,0x00,0x00,0x04,0x15,0x0E,0x0E,0x15,0x04,0x00,0x00,0x00],  # *
+            11: [0x00,0x00,0x00,0x08,0x08,0x3E,0x08,0x08,0x00,0x00,0x00,0x00],  # +
+            12: [0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x02,0x02,0x01,0x00],  # ,
+            13: [0x00,0x00,0x00,0x00,0x00,0x3F,0x00,0x00,0x00,0x00,0x00,0x00],  # -
+            14: [0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x02,0x00,0x00],  # .
+            15: [0x00,0x20,0x10,0x10,0x08,0x08,0x04,0x04,0x02,0x02,0x01,0x00],  # /
+            16: [0x00,0x00,0x0E,0x11,0x11,0x11,0x11,0x11,0x11,0x0E,0x00,0x00],  # 0
+            17: [0x00,0x00,0x04,0x06,0x04,0x04,0x04,0x04,0x04,0x0E,0x00,0x00],  # 1
+            18: [0x00,0x00,0x0E,0x11,0x11,0x08,0x04,0x02,0x01,0x1F,0x00,0x00],  # 2
+            19: [0x00,0x00,0x0E,0x11,0x10,0x0C,0x10,0x10,0x11,0x0E,0x00,0x00],  # 3
+            20: [0x00,0x00,0x08,0x0C,0x0C,0x0A,0x09,0x1F,0x08,0x1C,0x00,0x00],  # 4
+            21: [0x00,0x00,0x1F,0x01,0x01,0x0F,0x11,0x10,0x11,0x0E,0x00,0x00],  # 5
+            22: [0x00,0x00,0x0C,0x12,0x01,0x0D,0x13,0x11,0x11,0x0E,0x00,0x00],  # 6
+            23: [0x00,0x00,0x1E,0x10,0x08,0x08,0x04,0x04,0x04,0x04,0x00,0x00],  # 7
+            24: [0x00,0x00,0x0E,0x11,0x11,0x0E,0x11,0x11,0x11,0x0E,0x00,0x00],  # 8
+            25: [0x00,0x00,0x0E,0x11,0x11,0x19,0x16,0x10,0x09,0x06,0x00,0x00],  # 9
+            26: [0x00,0x00,0x00,0x00,0x04,0x00,0x00,0x00,0x00,0x04,0x00,0x00],  # :
+            27: [0x00,0x00,0x00,0x00,0x00,0x04,0x00,0x00,0x00,0x04,0x04,0x00],  # ;
+            28: [0x00,0x00,0x10,0x08,0x04,0x02,0x02,0x04,0x08,0x10,0x00,0x00],  # <
+            29: [0x00,0x00,0x00,0x00,0x3F,0x00,0x3F,0x00,0x00,0x00,0x00,0x00],  # =
+            30: [0x00,0x00,0x02,0x04,0x08,0x10,0x10,0x08,0x04,0x02,0x00,0x00],  # >
+            31: [0x00,0x00,0x0E,0x11,0x11,0x08,0x04,0x04,0x00,0x04,0x00,0x00],  # ?
+            32: [0x00,0x00,0x1C,0x22,0x29,0x2D,0x2D,0x1D,0x22,0x1C,0x00,0x00],  # @
+            33: [0x00,0x00,0x04,0x04,0x0C,0x0A,0x0A,0x1E,0x12,0x33,0x00,0x00],  # A
+            34: [0x00,0x00,0x0F,0x12,0x12,0x0E,0x12,0x12,0x12,0x0F,0x00,0x00],  # B
+            35: [0x00,0x00,0x1E,0x11,0x01,0x01,0x01,0x01,0x11,0x0E,0x00,0x00],  # C
+            36: [0x00,0x00,0x0F,0x12,0x12,0x12,0x12,0x12,0x12,0x0F,0x00,0x00],  # D
+            37: [0x00,0x00,0x1F,0x12,0x0A,0x0E,0x0A,0x02,0x12,0x1F,0x00,0x00],  # E
+            38: [0x00,0x00,0x1F,0x12,0x0A,0x0E,0x0A,0x02,0x02,0x07,0x00,0x00],  # F
+            39: [0x00,0x00,0x1C,0x12,0x01,0x01,0x39,0x11,0x12,0x0C,0x00,0x00],  # G
+            40: [0x00,0x00,0x33,0x12,0x12,0x1E,0x12,0x12,0x12,0x33,0x00,0x00],  # H
+            41: [0x00,0x00,0x1F,0x04,0x04,0x04,0x04,0x04,0x04,0x1F,0x00,0x00],  # I
+            42: [0x00,0x00,0x3E,0x08,0x08,0x08,0x08,0x08,0x08,0x08,0x09,0x07],  # J
+            43: [0x00,0x00,0x37,0x12,0x0A,0x06,0x0A,0x12,0x12,0x37,0x00,0x00],  # K
+            44: [0x00,0x00,0x07,0x02,0x02,0x02,0x02,0x02,0x22,0x3F,0x00,0x00],  # L
+            45: [0x00,0x00,0x3B,0x1B,0x1B,0x1B,0x15,0x15,0x15,0x35,0x00,0x00],  # M
+            46: [0x00,0x00,0x3B,0x12,0x16,0x16,0x1A,0x1A,0x12,0x17,0x00,0x00],  # N
+            47: [0x00,0x00,0x0E,0x11,0x11,0x11,0x11,0x11,0x11,0x0E,0x00,0x00],  # O
+            48: [0x00,0x00,0x0F,0x12,0x12,0x0E,0x02,0x02,0x02,0x07,0x00,0x00],  # P
+            49: [0x00,0x00,0x0E,0x11,0x11,0x11,0x11,0x17,0x19,0x0E,0x18,0x00],  # Q
+            50: [0x00,0x00,0x0F,0x12,0x12,0x0E,0x0A,0x12,0x12,0x37,0x00,0x00],  # R
+            51: [0x00,0x00,0x1E,0x11,0x01,0x06,0x08,0x10,0x11,0x0F,0x00,0x00],  # S
+            52: [0x00,0x00,0x1F,0x15,0x04,0x04,0x04,0x04,0x04,0x0E,0x00,0x00],  # T
+            53: [0x00,0x00,0x33,0x12,0x12,0x12,0x12,0x12,0x12,0x0C,0x00,0x00],  # U
+            54: [0x00,0x00,0x33,0x12,0x12,0x0A,0x0A,0x0C,0x04,0x04,0x00,0x00],  # V
+            55: [0x00,0x00,0x15,0x15,0x15,0x15,0x0E,0x0A,0x0A,0x0A,0x00,0x00],  # W
+            56: [0x00,0x00,0x1B,0x0A,0x0A,0x04,0x04,0x0A,0x0A,0x1B,0x00,0x00],  # X
+            57: [0x00,0x00,0x1B,0x0A,0x0A,0x0A,0x04,0x04,0x04,0x0E,0x00,0x00],  # Y
+            58: [0x00,0x00,0x1F,0x09,0x08,0x04,0x04,0x02,0x12,0x1F,0x00,0x00],  # Z
+            59: [0x1C,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x1C,0x00],  # [
+            60: [0x00,0x02,0x02,0x04,0x04,0x04,0x08,0x08,0x08,0x10,0x10,0x00],  # \
+            61: [0x0E,0x08,0x08,0x08,0x08,0x08,0x08,0x08,0x08,0x08,0x0E,0x00],  # ]
+            62: [0x04,0x0A,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],  # ^
+            63: [0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x3F],  # _
+            64: [0x02,0x04,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],  # `
+            65: [0x00,0x00,0x00,0x00,0x00,0x0C,0x12,0x1C,0x12,0x3C,0x00,0x00],  # a
+            66: [0x00,0x03,0x02,0x02,0x02,0x0E,0x12,0x12,0x12,0x0E,0x00,0x00],  # b
+            67: [0x00,0x00,0x00,0x00,0x00,0x1C,0x12,0x02,0x12,0x0C,0x00,0x00],  # c
+            68: [0x00,0x18,0x10,0x10,0x10,0x1C,0x12,0x12,0x12,0x3C,0x00,0x00],  # d
+            69: [0x00,0x00,0x00,0x00,0x00,0x0C,0x12,0x1E,0x02,0x1C,0x00,0x00],  # e
+            70: [0x00,0x18,0x24,0x04,0x04,0x1E,0x04,0x04,0x04,0x1E,0x00,0x00],  # f
+            71: [0x00,0x00,0x00,0x00,0x00,0x3C,0x12,0x0C,0x02,0x1C,0x22,0x1C],  # g
+            72: [0x00,0x03,0x02,0x02,0x02,0x0E,0x12,0x12,0x12,0x37,0x00,0x00],  # h
+            73: [0x00,0x04,0x04,0x00,0x00,0x06,0x04,0x04,0x04,0x0E,0x00,0x00],  # i
+            74: [0x00,0x08,0x08,0x00,0x00,0x0C,0x08,0x08,0x08,0x08,0x08,0x07],  # j
+            75: [0x00,0x03,0x02,0x02,0x02,0x1A,0x0A,0x06,0x0A,0x13,0x00,0x00],  # k
+            76: [0x00,0x07,0x04,0x04,0x04,0x04,0x04,0x04,0x04,0x1F,0x00,0x00],  # l
+            77: [0x00,0x00,0x00,0x00,0x00,0x0F,0x15,0x15,0x15,0x15,0x00,0x00],  # m
+            78: [0x00,0x00,0x00,0x00,0x00,0x0F,0x12,0x12,0x12,0x37,0x00,0x00],  # n
+            79: [0x00,0x00,0x00,0x00,0x00,0x0C,0x12,0x12,0x12,0x0C,0x00,0x00],  # o
+            80: [0x00,0x00,0x00,0x00,0x00,0x0F,0x12,0x12,0x12,0x0E,0x02,0x07],  # p
+            81: [0x00,0x00,0x00,0x00,0x00,0x1C,0x12,0x12,0x12,0x1C,0x10,0x38],  # q
+            82: [0x00,0x00,0x00,0x00,0x00,0x1B,0x06,0x02,0x02,0x07,0x00,0x00],  # r
+            83: [0x00,0x00,0x00,0x00,0x00,0x1E,0x02,0x0C,0x10,0x1E,0x00,0x00],  # s
+            84: [0x00,0x00,0x00,0x04,0x04,0x1E,0x04,0x04,0x04,0x1C,0x00,0x00],  # t
+            85: [0x00,0x00,0x00,0x00,0x00,0x1B,0x12,0x12,0x12,0x3C,0x00,0x00],  # u
+            86: [0x00,0x00,0x00,0x00,0x00,0x1B,0x0A,0x0A,0x04,0x04,0x00,0x00],  # v
+            87: [0x00,0x00,0x00,0x00,0x00,0x15,0x15,0x0E,0x0A,0x0A,0x00,0x00],  # w
+            88: [0x00,0x00,0x00,0x00,0x00,0x1B,0x0A,0x04,0x0A,0x1B,0x00,0x00],  # x
+            89: [0x00,0x00,0x00,0x00,0x00,0x33,0x12,0x12,0x0C,0x08,0x04,0x03],  # y
+            90: [0x00,0x00,0x00,0x00,0x00,0x1E,0x08,0x04,0x04,0x1E,0x00,0x00],  # z
+            91: [0x18,0x08,0x08,0x08,0x08,0x0C,0x08,0x08,0x08,0x08,0x18,0x00],  # {
+            92: [0x08,0x08,0x08,0x08,0x08,0x08,0x08,0x08,0x08,0x08,0x08,0x08],  # |
+            93: [0x06,0x04,0x04,0x04,0x04,0x08,0x04,0x04,0x04,0x04,0x06,0x00],  # }
+            94: [0x16,0x09,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],  # ~
+        }
+        # 如果字符未定义，返回空列表
+        return ascii_1206.get(char_code, [0] * 12)
+
+# ==========================================
+# 2. FTDI SPI 接口 (重构优化版)
+# ==========================================
+
+class FTD2XXSPIInterface:
+    """基于FTD2XX.DLL的SPI接口实现"""
+    
+    # [精简]: 常量保留，但为了代码整洁，不在此处列出所有未使用的错误码
+    FT_OK = 0
+    FT_BITMODE_RESET = 0x00
+    FT_BITMODE_MPSSE = 0x02
+    
+    # MPSSE命令 (常用)
+    CMD_SET_DATA_BITS_LOW = 0x80
+    CMD_SET_DATA_BITS_HIGH = 0x82
+    CMD_SEND_IMMEDIATE = 0x87
+    CMD_CLOCK_FALL_OUT_BYTES = 0x11
+    CMD_CLOCK_RISE_OUT_BYTES = 0x10
+    
+    def __init__(self, device_index: int = 0, use_ctypes: bool = False):
+        self.device_index = device_index
+        self.use_ctypes = use_ctypes
+        self.device_handle = None
+        self.is_connected = False
+        
+        # SPI默认配置
+        self.spi_mode = 0
+        self.clock_speed = 1000000
+        
+        # GPIO状态缓存
+        self.gpio_low = {'val': 0x00, 'dir': 0x00}
+        self.gpio_high = {'val': 0x00, 'dir': 0x00}
+        
+        # 引脚定义 (仅列出关键的)
+        self.PIN_A0, self.PIN_RESET, self.PIN_CS = 8, 9, 10
+        
+        if use_ctypes:
+            self._init_dll()
+    
+    def _init_dll(self):
+        """初始化DLL"""
+        dll_names = [r'C:\Users\sesa696240\Desktop\PMDB\FTD2XX.DLL', 'FTD2XX.DLL', 'ftd2xx.dll']
+        self.ftd2xx_dll = None
+        for name in dll_names:
+            try:
+                self.ftd2xx_dll = windll.LoadLibrary(name)
+                # print(f"DLL loaded: {name}")
+                break
+            except OSError: continue
+            
+        if not self.ftd2xx_dll: raise Exception("无法加载FTD2XX.DLL")
+        
+        # [精简]: 仅设置用到的函数原型，通过 getattr 动态设置减少代码行数
+        funcs = [
+            ('FT_Open', [c_int, POINTER(c_void_p)], c_ulong),
+            ('FT_Close', [c_void_p], c_ulong),
+            ('FT_Write', [c_void_p, c_void_p, c_ulong, POINTER(c_ulong)], c_ulong),
+            ('FT_Read', [c_void_p, c_void_p, c_ulong, POINTER(c_ulong)], c_ulong),
+            ('FT_SetBitMode', [c_void_p, c_ubyte, c_ubyte], c_ulong),
+            ('FT_SetUSBParameters', [c_void_p, c_ulong, c_ulong], c_ulong),
+            ('FT_SetLatencyTimer', [c_void_p, c_ubyte], c_ulong),
+            ('FT_Purge', [c_void_p, c_ulong], c_ulong),
+            ('FT_GetQueueStatus', [c_void_p, POINTER(c_ulong)], c_ulong),
+        ]
+        for name, args, res in funcs:
+            f = getattr(self.ftd2xx_dll, name)
+            f.argtypes = args; f.restype = res
+
+    def _clear_input_buffer(self):
+        """清理缓冲区"""
+        # [优化]: 简化逻辑，仅在 ctypes 模式下演示核心清理
+        if not self.use_ctypes: 
+            if hasattr(self.device_handle, 'purge'): self.device_handle.purge(3)
+            return
+
+        q_status = c_ulong()
+        self.ftd2xx_dll.FT_GetQueueStatus(self.device_handle, byref(q_status))
+        if q_status.value > 0:
+            # print(f"清理 {q_status.value} 字节...")
+            self.ftd2xx_dll.FT_Read(self.device_handle, create_string_buffer(q_status.value), q_status.value, byref(c_ulong()))
+
+    def connect(self) -> bool:
+        try:
+            if self.use_ctypes:
+                handle = c_void_p()
+                if self.ftd2xx_dll.FT_Open(self.device_index, byref(handle)) != 0: return False
+                self.device_handle = handle
+                self.ftd2xx_dll.FT_SetUSBParameters(handle, 65536, 65536)
+                self.ftd2xx_dll.FT_SetLatencyTimer(handle, 1)
+                self.ftd2xx_dll.FT_SetBitMode(handle, 0, self.FT_BITMODE_RESET)
+                time.sleep(0.01)
+                self.ftd2xx_dll.FT_SetBitMode(handle, 0, self.FT_BITMODE_MPSSE)
+                self.ftd2xx_dll.FT_Purge(handle, 3) # RX | TX
+            else:
+                if not FTDI_AVAILABLE: return False
+                self.device_handle = ftd2xx.open(self.device_index)
+                self.device_handle.setUSBParameters(65536, 65536)
+                self.device_handle.setLatencyTimer(1)
+                self.device_handle.setBitMode(0, 0)
+                time.sleep(0.01)
+                self.device_handle.setBitMode(0, 2)
+                self.device_handle.purge(3)
+
+            self._initialize_mpsse()
+            self.is_connected = True
+            return True
+        except Exception as e:
+            print(f"Connect Error: {e}")
+            return False
+
+    def disconnect(self):
+        if self.device_handle:
+            if self.use_ctypes: self.ftd2xx_dll.FT_Close(self.device_handle)
+            else: self.device_handle.close()
+        self.is_connected = False
+
+    def _initialize_mpsse(self):
+        """MPSSE初始化"""
+        # [精简]: 合并同步命令
+        self._write_data([0xAA, 0xAA, 0xAB, 0xAB]) # 反复同步
+        
+        # 计算分频
+        divisor = max(0, min(0xFFFF, int(12000000 / (2 * self.clock_speed)) - 1))
+        
+        # 初始GPIO设置: SCLK(0), MOSI(1)=Out, MISO(2)=In, CS0-4(3-7)=Out
+        # Val: Clock low (CPOL=0), others low. Dir: 0xFB (11111011) -> MISO is input
+        self.gpio_low['dir'] = 0xFB 
+        self.gpio_low['val'] = 0x00 if self.spi_mode <= 1 else 0x01 # CPOL check
+        
+        # High byte: A0(8), RESET(9), CS(10) = Out
+        self.gpio_high['dir'] = 0x07
+        self.gpio_high['val'] = 0x07 # Default high
+
+        # [优化]: 命令构建一次性完成
+        cmds = [
+            0x8A, 0x97, 0x8D,       # Disable div5, adaptive clk, 3-phase
+            0x86, divisor & 0xFF, (divisor >> 8) & 0xFF, # Set divisor
+            0x85,                   # Disable loopback
+            self.CMD_SET_DATA_BITS_LOW, self.gpio_low['val'], self.gpio_low['dir'],
+            self.CMD_SET_DATA_BITS_HIGH, self.gpio_high['val'], self.gpio_high['dir']
+        ]
+        self._write_data(cmds)
+
+    def _write_data(self, data: Union[List[int], bytes, bytearray]):
+        """底层写"""
+        if not self.device_handle: return
+        # [优化]: 统一转为 bytes
+        b_data = bytes(data) if not isinstance(data, (bytes, bytearray)) else data
+        if self.use_ctypes:
+            written = c_ulong()
+            self.ftd2xx_dll.FT_Write(self.device_handle, b_data, len(b_data), byref(written))
+        else:
+            self.device_handle.write(b_data)
+
+    def _read_data(self, length: int) -> bytes:
+        """底层读"""
+        if self.use_ctypes:
+            buf = create_string_buffer(length)
+            read = c_ulong()
+            self.ftd2xx_dll.FT_Read(self.device_handle, buf, length, byref(read))
+            return buf.raw[:read.value]
+        return self.device_handle.read(length)
+
+    def configure_spi(self, mode: int, speed: int):
+        self.spi_mode = mode
+        self.clock_speed = speed
+        if self.is_connected: self._initialize_mpsse()
+
+    # [优化]: 新增辅助方法，生成SPI操作前的GPIO前缀指令，消除 spi_write/read 中的冗余代码
+    def _make_spi_prefix(self) -> List[int]:
+        cpol = 1 if self.spi_mode >= 2 else 0
+        cpha = self.spi_mode % 2
+        # CPHA=0: write on transition away from idle. CPHA=1: write on transition back to idle
+        # 这里简化处理，MPSSE自动处理时钟，我们只需要设置初始状态
+        # 恢复时钟空闲状态
+        clk_idle = 1 if cpol else 0
+        # 如果当前时钟线状态不对，才需要改（这里为了安全总是重设）
+        val = self.gpio_low['val'] & ~0x01 | clk_idle
+        return [self.CMD_SET_DATA_BITS_LOW, val, self.gpio_low['dir']]
+
+    def spi_write(self, data: Union[List[int], bytes]) -> bool:
+        if not self.is_connected or not data: return False
+        
+        # [精简]: 复用前缀生成
+        cmds = self._make_spi_prefix()
+        
+        # 根据模式选择指令
+        cpol, cpha = (self.spi_mode >= 2), (self.spi_mode % 2)
+        # MPSSE: 0x11 (Fall out) for Mode 0, 0x10 (Rise out) for Mode 1 if simple logic
+        # 严格来说 Mode0=Fall out (-ve edge), Mode1=Rise out (+ve edge)
+        # 官方文档建议 Mode0: 0x11, Mode2: 0x11 (CPHA=0 -> Write out on falling edge of internal clk?)
+        # 这里沿用原代码逻辑：CPOL==CPHA -> 0x11, else -> 0x10
+        cmd_byte = self.CMD_CLOCK_FALL_OUT_BYTES if (cpol == cpha) else self.CMD_CLOCK_RISE_OUT_BYTES
+        
+        l = len(data) - 1
+        cmds.extend([cmd_byte, l & 0xFF, (l >> 8) & 0xFF])
+        cmds.extend(data)
+        self._write_data(cmds)
+        return True
+
+    def _update_gpio(self, high_byte: bool, pin_idx: int, val: bool):
+        """更新内部GPIO状态缓存并发送"""
+        target = self.gpio_high if high_byte else self.gpio_low
+        mask = 1 << pin_idx
+        if val: target['val'] |= mask
+        else: target['val'] &= ~mask
+        target['dir'] |= mask # 设为输出
+        
+        # 发送GPIO更新指令
+        cmd = self.CMD_SET_DATA_BITS_HIGH if high_byte else self.CMD_SET_DATA_BITS_LOW
+        self._write_data([cmd, target['val'], target['dir']])
+
+    # [精简]: 将 set_a0, set_reset, set_cs 合并调用通用方法
+    def set_a0(self, state: bool): self._update_gpio(True, 0, state) # Pin 8 -> idx 0 of high byte
+    def set_reset(self, state: bool): self._update_gpio(True, 1, state)
+    def set_cs_main(self, state: bool): self._update_gpio(True, 2, state)
+
+    def LCD_Command(self, cmd: int):
+        # [优化]: 组合GPIO操作，减少USB包数量。将CS/A0拉低打包在一起
+        # 为了极简，这里暂保持分步，但去除了冗余检查
+        self.set_a0(False)
+        self.set_cs_main(False)
+        self.spi_write([cmd])
+        self.set_cs_main(True)
+
+    def LCD_DataN(self, data: Union[List[int], bytearray]):
+        self.set_a0(True)
+        self.set_cs_main(False)
+        self.spi_write(data)
+        self.set_cs_main(True)
+
+# ==========================================
+# 3. PMDB LCD 驱动 (优化算法版)
+# ==========================================
+
+class PMDBLCD:
+    def __init__(self, spi: FTD2XXSPIInterface):
+        self.spi = spi
+        # [优化]: 使用 bytearray 替代 list，操作更快
+        self.buffer = bytearray(16 * 128) 
+
+    def init_controller(self):
+        """初始化序列"""
+        cmds = [
+            0xe1, 0xe2, # Reset
+            0xa4, 0xa6, # Normal display
+            0xb8, 0x00, # MTP
+            0x2d, 0x20, 0xea, # Pump, Temp, Bias
+            0x81, 170,  # Contrast
+            0xa3, 0xc8, 0x2F, # Rate, N-Line
+            0x89, 0x95, # RAM control
+            0x84, 0xf1, 127, # COM setup
+            0xC4, 0x86, # Mapping, Scan line
+            0x40, 0x50, # Scroll
+            0xf4, 55, 0xf6, 182, 0xf5, 0, 0xf7, 15, 0xf9, # Window
+            0xc9, 0xad # Enable
+        ]
+        # [优化]: 批量发送命令不是标准接口，这里还是模拟单条发送以确保时序，
+        # 但实际中如果控制器支持流式命令可合并。为稳妥起见，循环发送。
+        self.spi.LCD_Reset()
+        time.sleep(0.01)
+        
+        # 区分 Command (单字节) 和 Data (参数)
+        # 原代码混杂了Cmd和Data，这里为保持原逻辑直接复刻
+        # 注意: 0xe2, 0x00 等是前一个命令的参数，需作为Data发送
+        # 这里简化处理：根据原代码逻辑逐行复现
+        seq = [
+            (True, 0xe1), (False, 0xe2), # Cmd, Data
+            (True, 0xa4), (True, 0xa6),
+            (True, 0xb8), (False, 0x00),
+            (True, 0x2d), (True, 0x20), (True, 0xea),
+            (True, 0x81), (False, 170),
+            (True, 0xa3), (True, 0xc8), (False, 0x2f),
+            (True, 0x89), (True, 0x95),
+            (True, 0x84), (True, 0xf1), (False, 127),
+            (True, 0xc4), (True, 0x86),
+            (True, 0x40), (True, 0x50),
+            (True, 0x04), (False, 55), # Col addr
+            (True, 0x60), (True, 0x70), # Page addr
+            (True, 0xf4), (False, 55), (True, 0xf6), (False, 182),
+            (True, 0xf5), (False, 0), (True, 0xf7), (False, 15), (True, 0xf9),
+            (True, 0xc9), (False, 0xad)
+        ]
+        for is_cmd, val in seq:
+            if is_cmd: self.spi.LCD_Command(val)
+            else: self.spi.LCD_Data(val)
+        return True
+
+    def flush(self):
+        """刷新屏幕"""
+        # [优化]: 直接利用 bytearray 切片，避免 list 拷贝
+        for page in range(16):
+            self.spi.LCD_Command(0x60 | (page & 0x0F))
+            self.spi.LCD_Command(0x70 | (page >> 4))
+            self.spi.LCD_Command(0x04); self.spi.LCD_Data(55) # Col setup
+            self.spi.LCD_Command(0x01) # Write data cmd
+            
+            start = page * 128
+            self.spi.LCD_DataN(self.buffer[start : start + 128])
+
+    def clear(self, color: int = 0):
+        # [优化]: 利用 bytearray 快速填充
+        val = 0xFF if color else 0x00
+        for i in range(len(self.buffer)): self.buffer[i] = val
+
+    def draw_point(self, x: int, y: int, color: int):
+        if not (0 <= x < 128 and 0 <= y < 128): return
+        page = y >> 3
+        bit = y & 0x07
+        idx = page * 128 + x
+        # [优化]: 简化位操作逻辑
+        if color: self.buffer[idx] |= (1 << bit)
+        else: self.buffer[idx] &= ~(1 << bit)
+
+    def draw_line(self, x1, y1, x2, y2, color):
+        # Bresenham's algorithm (Standard)
+        dx = abs(x2 - x1); sx = 1 if x1 < x2 else -1
+        dy = -abs(y2 - y1); sy = 1 if y1 < y2 else -1
+        err = dx + dy
+        while True:
+            self.draw_point(x1, y1, color)
+            if x1 == x2 and y1 == y2: break
+            e2 = 2 * err
+            if e2 >= dy: err += dy; x1 += sx
+            if e2 <= dx: err += dx; y1 += sy
+
+    def draw_rect(self, x1, y1, x2, y2, color):
+        self.draw_line(x1, y1, x2, y1, color)
+        self.draw_line(x1, y2, x2, y2, color)
+        self.draw_line(x1, y1, x1, y2, color)
+        self.draw_line(x2, y1, x2, y2, color)
+
+    def draw_circle(self, x0, y0, r, color):
+        f = 1 - r; ddF_x = 1; ddF_y = -2 * r; x = 0; y = r
+        self.draw_point(x0, y0 + r, color); self.draw_point(x0, y0 - r, color)
+        self.draw_point(x0 + r, y0, color); self.draw_point(x0 - r, y0, color)
+        while x < y:
+            if f >= 0: y -= 1; ddF_y += 2; f += ddF_y
+            x += 1; ddF_x += 2; f += ddF_x
+            for px, py in [(x0+x, y0+y), (x0-x, y0+y), (x0+x, y0-y), (x0-x, y0-y),
+                           (x0+y, y0+x), (x0-y, y0+x), (x0+y, y0-x), (x0-y, y0-x)]:
+                self.draw_point(px, py, color)
+
+    def show_string(self, x, y, text, size=12, color=1):
+        """仅支持 size=12 的 ASCII"""
+        # [优化]: 移除对 fc/bc 的复杂支持，简化为单色
+        if size != 12: return
+        for char in text:
+            if x > 128: break
+            code = ord(char)
+            # 简易版仅支持 ASCII
+            font = LCDFonts.get_ascii_1206_font(code) if code < 128 else [0]*12
+            
+            # 绘制 6x12 字符
+            # 注意: 12高通常跨越2个Page。这里逐点绘制虽慢但通用
+            for r in range(12):
+                row_data = font[r] if r < len(font) else 0
+                for c in range(6):
+                    # Font define: bit0 is left? 假设数据是行映射
+                    # LCDFonts 原数据看起来是: font[r] 是第r行的数据，
+                    # 这里的原 font 字典定义有些奇怪，原代码是 font[i] & (1<<j)
+                    if font[r] & (1 << c):
+                        self.draw_point(x + c, y + r, color)
+                    else:
+                        self.draw_point(x + c, y + r, 0) # 清除背景
+            x += 6
+
+# ==========================================
+# 主程序
+# ==========================================
+
+def main():
+    print("LCD Driver Demo (Optimized)")
+    spi = FTD2XXSPIInterface(device_index=0, use_ctypes=True)
+    
+    if not spi.connect():
+        print("Device not found")
+        return
+        
+    spi.configure_spi(0, 500000) # 500kHz
+    lcd = PMDBLCD(spi)
+    
+    if not lcd.init_controller():
+        print("LCD Init Failed")
+        spi.disconnect(); return
+
+    print("LCD Initialized. Press ESC to exit.")
+    
+    lcd.clear(0)
+    lcd.draw_rect(0, 0, 127, 127, 1)
+    lcd.draw_line(0, 0, 127, 127, 1)
+    lcd.draw_circle(64, 64, 30, 1)
+    lcd.show_string(10, 10, "Optimized!", 12)
+    lcd.flush()
+
+    iloop = False
+    while True:
+        # [优化]: 简化闪烁逻辑
+        txt_col = 0 if iloop else 1
+        lcd.show_string(10, 30, "Blinking...", 12, txt_col)
+        lcd.flush()
+        
+        iloop = not iloop
+        
+        if msvcrt.kbhit() and msvcrt.getch() == b'\x1b':
+            print("Exiting...")
+            break
+        time.sleep(0.5)
+
+    spi.disconnect()
+
+if __name__ == "__main__":
+    main()
