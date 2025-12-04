@@ -1,5 +1,5 @@
 """
-PMDB LCD 驱动最终完整版
+P3PLUS LCD 驱动最终完整版
 -------------------------------------------------------------------------
 功能特性:
 1. 高性能 SPI 通信: 使用 MPSSE 指令打包技术，消除 USB 帧延迟，解决屏幕闪烁。
@@ -21,7 +21,7 @@ from ctypes import (
 )
 
 # 配置 DLL 路径
-os.environ['FTD2XX_DLL_DIR'] = r'C:\Users\sesa696240\Desktop\PMDB'
+os.environ['FTD2XX_DLL_DIR'] = r'C:\Users\sesa696240\Desktop\P3PLUS'
 
 try:
     import ftd2xx
@@ -120,7 +120,7 @@ class FTD2XXSPIInterface:
     def _init_dll(self):
         """加载 FTD2XX.DLL 并定义 ctypes 函数原型"""
         try:
-            dll_paths = [r'C:\Users\sesa696240\Desktop\PMDB\FTD2XX.DLL', 'FTD2XX.DLL', 'ftd2xx.dll']
+            dll_paths = [r'C:\Users\sesa696240\Desktop\P3PLUS\FTD2XX.DLL', 'FTD2XX.DLL', 'ftd2xx.dll']
             self.ftd2xx_dll = None
             for path in dll_paths:
                 try:
@@ -262,19 +262,19 @@ class FTD2XXSPIInterface:
     def LCD_DataN(self, data_list: List[int]): self._send_packet(list(data_list), is_command=False)
 
 # ============================================================================
-# 3. PMDB LCD 驱动层 (UC1638 逻辑)
+# 3. P3PLUS LCD 驱动层 (UC1638 逻辑)
 # ============================================================================
-class PMDBLCD:
-    PMDB_PAGES_16 = 16 # 128行 / 8位 = 16页
-    PMDB_COLS = 128
-    PMDB_ROWS = 128
+class P3PLUSLCD:
+    P3PLUS_PAGES_16 = 16 # 128行 / 8位 = 16页
+    P3PLUS_COLS = 128
+    P3PLUS_ROWS = 128
     
     def __init__(self, spi_interface: FTD2XXSPIInterface):
         self.spi = spi_interface
         # 显存缓冲区: 128列 * 16页 = 2048 Bytes
-        self.display_buffer = [0] * (self.PMDB_PAGES_16 * self.PMDB_COLS)
+        self.display_buffer = [0] * (self.P3PLUS_PAGES_16 * self.P3PLUS_COLS)
         
-    def pmdb_init(self) -> bool:
+    def P3PLUS_init(self) -> bool:
         """初始化 UC1638 控制器寄存器"""
         try:
             self.spi.LCD_Reset()
@@ -322,14 +322,14 @@ class PMDBLCD:
             c(0xc9); d(0xad); # Display Enable: 开启显示，允许休眠模式唤醒
             return True
         except Exception as e:
-            print(f"PMDB初始化失败: {str(e)}")
+            print(f"P3PLUS初始化失败: {str(e)}")
             return False
     
     def lcd_flush(self) -> bool:
         """将本地显存缓冲区(Display Buffer)写入 GRAM"""
         try:
             buffer = self.display_buffer
-            for page in range(self.PMDB_PAGES_16):
+            for page in range(self.P3PLUS_PAGES_16):
                 # 1. 设置页地址 (Page Address Set: 0x60 + LSB, 0x70 + MSB)
                 self.spi.LCD_Command(0x60 | (page & 0x0F))
                 self.spi.LCD_Command(0x70 | (page >> 4))
@@ -342,7 +342,7 @@ class PMDBLCD:
                 
                 # 4. 批量发送一整页 (128 Bytes) 数据
                 # 利用 FTD2XXSPIInterface 的 Packetization，这一步是一次 USB 传输
-                page_data = buffer[page * self.PMDB_COLS:(page + 1) * self.PMDB_COLS]
+                page_data = buffer[page * self.P3PLUS_COLS:(page + 1) * self.P3PLUS_COLS]
                 self.spi.LCD_DataN(page_data)
             return True
         except Exception: return False
@@ -350,15 +350,15 @@ class PMDBLCD:
     def clear_screen(self, color: int = 0) -> bool:
         """清空显存"""
         val = 0xFF if color else 0x00
-        self.display_buffer = [val] * (self.PMDB_PAGES_16 * self.PMDB_COLS)
+        self.display_buffer = [val] * (self.P3PLUS_PAGES_16 * self.P3PLUS_COLS)
         return True
 
     def lcd_draw_point(self, x: int, y: int, color: int) -> bool:
         """画点逻辑: 计算 Page 和 Bit 偏移"""
-        if x < 0 or x >= self.PMDB_COLS or y < 0 or y >= self.PMDB_ROWS: return False
+        if x < 0 or x >= self.P3PLUS_COLS or y < 0 or y >= self.P3PLUS_ROWS: return False
         page = y >> 3   # y / 8
         row = y & 0x7   # y % 8
-        idx = page * self.PMDB_COLS + x
+        idx = page * self.P3PLUS_COLS + x
         
         if color & 1:
             self.display_buffer[idx] |= (1 << row) # 置位
@@ -372,10 +372,10 @@ class PMDBLCD:
         避免逐点调用的开销，直接操作 Byte 的掩码。
         """
         # 边界限制
-        if x1 > self.PMDB_COLS - 1: x1 = self.PMDB_COLS - 1
-        if x2 > self.PMDB_COLS - 1: x2 = self.PMDB_COLS - 1
-        if y1 > self.PMDB_ROWS - 1: y1 = self.PMDB_ROWS - 1
-        if y2 > self.PMDB_ROWS - 1: y2 = self.PMDB_ROWS - 1
+        if x1 > self.P3PLUS_COLS - 1: x1 = self.P3PLUS_COLS - 1
+        if x2 > self.P3PLUS_COLS - 1: x2 = self.P3PLUS_COLS - 1
+        if y1 > self.P3PLUS_ROWS - 1: y1 = self.P3PLUS_ROWS - 1
+        if y2 > self.P3PLUS_ROWS - 1: y2 = self.P3PLUS_ROWS - 1
         
         color = color & 1
         page1 = y1 >> 3
@@ -395,7 +395,7 @@ class PMDBLCD:
             
             # 批量应用掩码到列
             for col in range(x1, x2 + 1):
-                idx = page * self.PMDB_COLS + col
+                idx = page * self.P3PLUS_COLS + col
                 if color:
                     self.display_buffer[idx] |= mask
                 else:
@@ -510,7 +510,7 @@ class PMDBLCD:
 # 4. 主程序入口
 # ============================================================================
 def main():
-    print("PMDB LCD 图案切换演示程序")
+    print("P3PLUS LCD 图案切换演示程序")
     print("-----------------------------------")
     print("状态 1: 几何图形与文字演示")
     print("状态 2: 3x3 棋盘格 (5黑4白)")
@@ -525,8 +525,8 @@ def main():
         return
     
     try:
-        lcd = PMDBLCD(spi)
-        if not lcd.pmdb_init():
+        lcd = P3PLUSLCD(spi)
+        if not lcd.P3PLUS_init():
             print("错误: LCD 控制器初始化失败。")
             return
         
@@ -551,7 +551,7 @@ def main():
                 lcd.draw_circle(80, 40, 20, 1)             # 圆
                 lcd.lcd_draw_line(0, 0, 127, 127, 1)       # 对角线
                 lcd.lcd_show_string(10, 60, "Hello", 1, 0, 12, 1)
-                lcd.lcd_show_string(10, 80, "PMDB LCD", 1, 0, 12, 1)
+                lcd.lcd_show_string(10, 80, "P3PLUS LCD", 1, 0, 12, 1)
                 lcd.lcd_show_int_num(10, 100, 12345, 5, 1, 0, 12)
                 lcd.lcd_flush()
                 
